@@ -1,5 +1,5 @@
 /*
- Receive proto request → call service → return proto response.
+Receive proto request → call service → return proto response.
 */
 package grpc
 

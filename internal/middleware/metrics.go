@@ -7,11 +7,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"
 
-	"github.com/yourorg/github-search/internal/observability"
+	"github.com/vibhordubey333/github-service/internal/observability"
 )
 
 // MetricsInterceptor records Prometheus metrics for every RPC.
-// Kept separate from logging to follow single-responsibility.
 func MetricsInterceptor() grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
