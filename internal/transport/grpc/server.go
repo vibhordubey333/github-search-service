@@ -4,16 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"time"
 
+	searchv1 "github.com/vibhordubey333/github-service/api/proto/v1"
+	"github.com/vibhordubey333/github-service/internal/middleware"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
-	"google.golang.org/grpc/reflection"
-
-	searchv1 "github.com/vibhordubey333/github-service/api/proto/v1"
-	"github.com/vibhordubey333/github-service/internal/middleware"
 )
 
 /*
@@ -56,7 +53,7 @@ func NewServer(port string, handler *SearchHandler, logger *zap.Logger) (*Server
 	without needing the proto files. Disable in production if you
 	don't want to expose the API surface to external tooling.
 	*/
-	reflection.Register(grpcServer)
+	//reflection.Register(grpcServer)
 
 	return &Server{
 		grpcServer: grpcServer,
