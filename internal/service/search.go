@@ -66,63 +66,81 @@ func (s *SearchService) Search(ctx context.Context, input SearchInput) ([]Search
 		zap.String("user", input.User),
 	)
 
-	// Semaphore to bound concurrent GitHub API calls.
-	// Buffered channel acts as a counting semaphore.
-	// Acquiring: send to channel (blocks if full).
-	// Releasing: receive from channel.
-	sem := make(chan struct{}, s.maxConcurrency)
+	// Fetch page 1 synchronously to get total count
+	params := github.SearchParams{
+		Query:   query,
+		PerPage: 30,
+		Page:    1,
+	}
 
-	// In v1: fetch page 1 only.
-	// In v3 (pagination): loop over pages, each in its own goroutine,
-	// all bounded by the same semaphore.
-	pages := []int{1}
+	resp, err := s.github.SearchCode(ctx, params)
+	if err != nil {
+		return nil, fmt.Errorf("github search page 1: %w", err)
+	}
 
-	g, gCtx := errgroup.WithContext(ctx)
-
-	var mu sync.Mutex
 	var allResults []SearchResult
-
-	for _, page := range pages {
-		page := page // capture loop variable — critical for goroutine correctness
-
-		g.Go(func() error {
-			// Acquire semaphore
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }() // Release on return
-			case <-gCtx.Done():
-				return gCtx.Err()
-			}
-
-			params := github.SearchParams{
-				Query:   query,
-				PerPage: 30,
-				Page:    page,
-			}
-
-			resp, err := s.github.SearchCode(gCtx, params)
-			if err != nil {
-				return fmt.Errorf("github search page %d: %w", page, err)
-			}
-
-			results := make([]SearchResult, 0, len(resp.Items))
-			for _, item := range resp.Items {
-				results = append(results, SearchResult{
-					FileURL: item.HTMLURL,
-					Repo:    item.Repository.FullName,
-				})
-			}
-
-			mu.Lock()
-			allResults = append(allResults, results...)
-			mu.Unlock()
-
-			return nil
+	for _, item := range resp.Items {
+		allResults = append(allResults, SearchResult{
+			FileURL: item.HTMLURL,
+			Repo:    item.Repository.FullName,
 		})
 	}
 
-	if err := g.Wait(); err != nil {
-		return nil, err
+	// Calculate total pages (cap at 90 results / 3 pages to stay well within GitHub's 10 req/min code_search limit)
+	totalCount := resp.TotalCount
+	if totalCount > 90 {
+		totalCount = 90
+	}
+	totalPages := (totalCount + 29) / 30
+
+	if totalPages > 1 {
+		// Semaphore to bound concurrent GitHub API calls.
+		sem := make(chan struct{}, s.maxConcurrency)
+		g, gCtx := errgroup.WithContext(ctx)
+		var mu sync.Mutex
+
+		for page := 2; page <= totalPages; page++ {
+			page := page
+
+			g.Go(func() error {
+				// Acquire semaphore
+				select {
+				case sem <- struct{}{}:
+					defer func() { <-sem }() // Release on return
+				case <-gCtx.Done():
+					return gCtx.Err()
+				}
+
+				pageParams := github.SearchParams{
+					Query:   query,
+					PerPage: 30,
+					Page:    page,
+				}
+
+				pageResp, err := s.github.SearchCode(gCtx, pageParams)
+				if err != nil {
+					return fmt.Errorf("github search page %d: %w", page, err)
+				}
+
+				results := make([]SearchResult, 0, len(pageResp.Items))
+				for _, item := range pageResp.Items {
+					results = append(results, SearchResult{
+						FileURL: item.HTMLURL,
+						Repo:    item.Repository.FullName,
+					})
+				}
+
+				mu.Lock()
+				allResults = append(allResults, results...)
+				mu.Unlock()
+
+				return nil
+			})
+		}
+
+		if err := g.Wait(); err != nil {
+			return nil, err
+		}
 	}
 
 	return allResults, nil
@@ -138,16 +156,16 @@ func buildQuery(input SearchInput) string {
 
 func validateInput(input SearchInput) error {
 	if strings.TrimSpace(input.SearchTerm) == "" {
-		return fmt.Errorf("search_term is required")
+		return fmt.Errorf("%w: search_term is required", ErrorInvalidInput)
 	}
 	if len(input.SearchTerm) > 256 {
-		return fmt.Errorf("search_term exceeds maximum length")
+		return fmt.Errorf("%w: search_term exceeds maximum length", ErrorInvalidInput)
 	}
 
 	forbiddenChars := []string{":", "\"", "(", ")"}
 	for _, ch := range forbiddenChars {
 		if strings.Contains(input.User, ch) {
-			return fmt.Errorf("user field contains invalid characters")
+			return fmt.Errorf("%w: user field contains invalid characters", ErrorInvalidInput)
 		}
 	}
 	return nil
