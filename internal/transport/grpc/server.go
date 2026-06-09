@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/reflection"
 )
 
 /*
@@ -44,16 +45,12 @@ func NewServer(port string, handler *SearchHandler, logger *zap.Logger) (*Server
 	// Register the search service
 	searchv1.RegisterGithubSearchServiceServer(grpcServer, handler)
 
-	// Health check: Kubernetes liveness/readiness probes use this
+	//health check
 	healthServer := health.NewServer()
 	grpc_health_v1.RegisterHealthServer(grpcServer, healthServer)
 	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 
-	/* Allows grpcurl and other tools to discover the API
-	without needing the proto files. Disable in production if you
-	don't want to expose the API surface to external tooling.
-	*/
-	//reflection.Register(grpcServer)
+	reflection.Register(grpcServer)
 
 	return &Server{
 		grpcServer: grpcServer,
