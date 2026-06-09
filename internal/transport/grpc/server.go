@@ -49,7 +49,7 @@ func NewServer(port string, handler *SearchHandler, logger *zap.Logger) (*Server
 	grpc_health_v1.RegisterHealthServer(grpcServer, healthServer)
 	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 
-	/* Reflection: allows grpcurl and other tools to discover the API
+	/* Allows grpcurl and other tools to discover the API
 	without needing the proto files. Disable in production if you
 	don't want to expose the API surface to external tooling.
 	*/
