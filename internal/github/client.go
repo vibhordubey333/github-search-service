@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go.uber.org/zap"
 	"io"
@@ -60,25 +61,48 @@ func (c *Client) SearchCode(ctx context.Context, params SearchParams) (*SearchRe
 	var lastErr error
 
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
-		if attempt > 0 {
-
-			backoff := time.Duration(100*math.Pow(2, float64(attempt))) * time.Millisecond // 100 , 200 ,400 ms
-			c.logger.Info("retrying github request",
-				zap.Int("attempt", attempt),
-				zap.Duration("backoff", backoff),
-			)
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(backoff):
-			}
-		}
-
 		resp, err := c.doSearch(ctx, params)
 		if err != nil {
-			// Re-trying n/w errors
+			var rateLimitErr *ErrorRateLimit
+			var unexpectedErr *ErrorUnexpectedStatus
+
+			if errors.As(err, &rateLimitErr) {
+				c.logger.Warn("github rate limit exceeded", zap.Error(err), zap.Int("attempt", attempt))
+				if attempt < c.maxRetries {
+					backoff := rateLimitErr.RetryAfter
+					if backoff > 5*time.Second {
+						return nil, fmt.Errorf("rate limit wait time too long (%s): %w", backoff, err)
+					}
+					c.logger.Info("retrying after rate limit", zap.Duration("backoff", backoff))
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-time.After(backoff):
+					}
+					continue
+				}
+			} else if errors.As(err, &unexpectedErr) {
+				if unexpectedErr.StatusCode >= 400 && unexpectedErr.StatusCode < 500 {
+					return nil, err // Do not retry 4xx errors
+				}
+			}
+
+			// Re-trying other errors
 			lastErr = err
 			c.logger.Warn("github request failed", zap.Error(err), zap.Int("attempt", attempt))
+			
+			if attempt < c.maxRetries {
+				backoff := time.Duration(100*math.Pow(2, float64(attempt))) * time.Millisecond // 100 , 200 ,400 ms
+				c.logger.Info("retrying github request",
+					zap.Int("attempt", attempt),
+					zap.Duration("backoff", backoff),
+				)
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(backoff):
+				}
+			}
 			continue
 		}
 
@@ -124,7 +148,7 @@ func (c *Client) doSearch(ctx context.Context, params SearchParams) (*SearchResp
 		(httpResp.StatusCode == http.StatusForbidden &&
 			httpResp.Header.Get("X-RateLimit-Remaining") == "0") {
 
-		retryAfter := parseRetryAfter(httpResp.Header.Get("Retry-After"))
+		retryAfter := parseRetryAfter(httpResp.Header.Get("Retry-After"), httpResp.Header.Get("X-RateLimit-Reset"))
 		return nil, &ErrorRateLimit{RetryAfter: retryAfter}
 	}
 
@@ -145,13 +169,22 @@ func (c *Client) doSearch(ctx context.Context, params SearchParams) (*SearchResp
 	return &result, nil
 }
 
-func parseRetryAfter(header string) time.Duration {
-	if header == "" {
-		return 60 * time.Second
+func parseRetryAfter(retryAfter, reset string) time.Duration {
+	if retryAfter != "" {
+		secs, err := strconv.Atoi(retryAfter)
+		if err == nil {
+			return time.Duration(secs) * time.Second
+		}
 	}
-	secs, err := strconv.Atoi(header)
-	if err != nil {
-		return 60 * time.Second
+	if reset != "" {
+		epoch, err := strconv.ParseInt(reset, 10, 64)
+		if err == nil {
+			wait := time.Until(time.Unix(epoch, 0))
+			if wait > 0 {
+				return wait
+			}
+			return 0
+		}
 	}
-	return time.Duration(secs) * time.Second
+	return 60 * time.Second
 }
