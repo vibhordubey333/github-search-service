@@ -1,4 +1,4 @@
-.PHONY: all proto deps build lint clean run
+.PHONY: all proto deps build test test-unit test-integration lint clean run docker-build docker-run
 
 PROTOC_GEN_GO_VERSION     := v1.34.2
 PROTOC_GEN_GO_GRPC_VERSION := v1.4.0
@@ -37,3 +37,9 @@ lint:
 clean:
 	rm -rf bin/
 	rm -f api/proto/v1/search.pb.go api/proto/v1/search_grpc.pb.go
+
+docker-build:
+	docker build -t github-search-service -f deployments/Dockerfile .
+
+docker-run: docker-build
+	docker run -p 50051:50051 -p 9090:9090 --env-file .env github-search-service
